@@ -7,6 +7,7 @@ that saves the most time.
 Related documents:
 - `BUILD_NOTES.md`: how LIGGGHTS and VTK were compiled here.
 - `PE_CONVEYOR.md`: detailed write-up of the LIGGGHTS-to-pe port of the conveyor case.
+- `LESSONS.md`: condensed lessons about LIGGGHTS and about the LIGGGHTS-versus-pe comparison.
 
 Layout on disk (all under `/data/warehouse17/rmuenste/code/liggghts-dem/`):
 
@@ -396,7 +397,7 @@ large for this stone. This is **not** a self-penetration: members are removed fr
 collision system when added to a union, only the union is a detection body, and members of
 the same union are never paired.
 
-Fix (2026-10-02, uncommitted in the pe fork): `UnionBase::recomputeMassFromVolume(samples)`
+Fix (2026-10-02, pe branch `feature/liggghts-tutorial-ports`, PR #35): `UnionBase::recomputeMassFromVolume(samples)`
 samples the union's bounding box uniformly, counts every point inside at least one member once
 with that member's material density, and replaces mass, centre of mass and inertia (parallel
 axis about the new centre, body frame), then updates the members' relative positions. Links
@@ -704,7 +705,7 @@ comparisons.
    would be worth moving into `pe/util` as a proper module (and matching LIGGGHTS' `ntry_mc`
    packing density, see 9.6).
 3. **Clumps.** Unions work mechanically, but mass and inertia double-count overlaps (6.15).
-   Done: `UnionBase::recomputeMassFromVolume()` (Monte-Carlo, opt-in, uncommitted). Left to
+   Done: `UnionBase::recomputeMassFromVolume()` (Monte-Carlo, opt-in, pe PR #35). Left to
    decide: whether to make it the default for unions of overlapping primitives, and whether
    to refresh the links afterwards.
 4. **Triangle meshes.** STL import is disabled (OBJ only, shared vertices required), meshes are

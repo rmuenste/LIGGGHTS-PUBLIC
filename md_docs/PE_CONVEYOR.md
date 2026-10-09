@@ -176,7 +176,7 @@ ninja -C build/conveyor -j 48 pe_static conveyor
 Eigen 3.4 and nlohmann/json are fetched from the internet by CMake on first
 configure. The library builds in about 25 s, the example in about 9 s.
 
-Files added to the pe repository (uncommitted):
+Files added to the pe repository (branch `feature/liggghts-tutorial-ports`, pe PR #35):
 
 - `examples/conveyor/conveyor.cpp`
 - `examples/conveyor/CMakeLists.txt`
