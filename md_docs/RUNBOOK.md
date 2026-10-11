@@ -17,6 +17,8 @@ Layout on disk (all under `/data/warehouse17/rmuenste/code/liggghts-dem/`):
 | `pe-0.3rc1/` | pe fork, build tree `build/conveyor/`, example `examples/conveyor/` |
 | `vtk/install/` | VTK 9.3.1 used by LIGGGHTS (lib64, include/vtk-9.3) |
 | `runs/<case>/` | one directory per run, never inside the source trees |
+| `OpenFOAM-6/`, `CFDEMcoupling-PUBLIC/` | CFDEM stack, built by `md_docs/cfdem_build/build_stack.sh` (logs in `cfdem_build_logs/`) |
+| `cfdem-user/rmuenste-PUBLIC-6/run/` | CFDEM run directories |
 | `env.sh` | `source` it before any LIGGGHTS build or run |
 
 Conventions:
@@ -172,6 +174,18 @@ registered in `examples/CMakeLists.txt`). Mesh conversion: `runs/stl2obj_pe.py`.
 use friction 0.025 per material (pair value 0.05, as in the LIGGGHTS inputs; conveyor-style
 friction 0.5 cases use 0.25). Runs 15 to 22 used erp 0.5, runs 24 to 30 erp 0.05 (see quirk
 6.20); otherwise default relaxation settings.
+
+### Runs 31 and 32: CFDEM `cfdemSolverIB/twoSpheresGlowinskiMPI` (OpenFOAM-6 + LIGGGHTS)
+
+Stack built on 2026-10-12 with `md_docs/cfdem_build/build_stack.sh` (see
+`CFDEM_BUILD_NOTES.md` 0.2). Both runs via `source env.sh` plus
+`md_docs/cfdem_build/run_twoSpheresGlowinskiMPI.sh [name endTime]` on the login node,
+`mpirun -np 4`. Location: `cfdem-user/rmuenste-PUBLIC-6/run/<name>/`.
+
+| Run | Name | endTime | Wall (solver) | Outcome |
+|---|---|---|---|---|
+| 31 | `twoSpheresGlowinskiMPI` | 0.1 s (333 CFD steps) | 22 s | OK. At t = 0.099 s: z1/z2 = 2.8742/2.5607 cm, vz1/vz2 = -9.757/-8.475 cm/s, identical to the workstation run (`CFDEM_BUILD_NOTES.md` 6.3) |
+| 32 | `glow_t035` | 0.35 s (1167 CFD steps) | 77 s | OK. Drafting, kissing, tumbling; contact at t = 0.15 s, particle 1 passes below particle 2 at t = 0.288 s; all sample rows of `CFDEM_BUILD_NOTES.md` 6.4 identical to the printed digits, despite GCC 13.2 + OpenMPI 4.1.6 vs GCC 15.2 + OpenMPI 5.0.10 there |
 
 ---
 

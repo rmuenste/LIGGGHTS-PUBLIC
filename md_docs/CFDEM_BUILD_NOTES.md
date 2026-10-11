@@ -100,6 +100,41 @@ LIGGGHTS-PUBLIC/md_docs/cfdem_build/run_twoSpheresGlowinskiMPI.sh glow_t035 0.35
   with a different compiler or MPI, since the tumbling starts from round-off
   (6.4).
 
+### 0.2 Tested on the cluster (longhouse1a, 2026-10-12)
+
+Built next to the existing LIGGGHTS checkout, `CFDEM_ROOT=/data/warehouse17/rmuenste/code/liggghts-dem`
+(default), with the toolchain from `BUILD_NOTES.md`:
+
+```bash
+cd /data/warehouse17/rmuenste/code/liggghts-dem
+source env.sh                       # module load gcc/13.2.0 openmpi/4.1.6, VTK in LD_LIBRARY_PATH
+JOBS=32 LIGGGHTS_USE_VTK=ON LIGGGHTS-PUBLIC/md_docs/cfdem_build/build_stack.sh
+LIGGGHTS-PUBLIC/md_docs/cfdem_build/run_twoSpheresGlowinskiMPI.sh
+LIGGGHTS-PUBLIC/md_docs/cfdem_build/run_twoSpheresGlowinskiMPI.sh glow_t035 0.35
+```
+
+All stages passed on the first attempt in 24 min (sources 1 min, liggghts 23 s
+incremental, openfoam 21 min 43 s, cfdem 55 s, check 1 s); the only compile errors
+were the two expected scotch ones (2.6). Both tutorial runs reproduced the
+workstation numbers of 6.3 and 6.4 to every printed digit (RUNBOOK runs 31, 32;
+22 s and 77 s on 4 ranks). Differences from the workstation:
+
+- **`nproc` returns 1** because the login environment sets `OMP_NUM_THREADS=1`
+  (GNU `nproc` honours it). The script's default `JOBS=$(nproc)` would build serially;
+  always pass `JOBS` explicitly here.
+- **VTK on:** `MAKE/Makefile.user` already had `USE_VTK = "ON"` with the self-built
+  VTK 9.3.1, so `LIGGGHTS_USE_VTK=ON` is required (otherwise the `liggghts` stage stops
+  on the USE_VTK mismatch). `liblmp_auto.so` then depends on the VTK libraries; linking
+  and running `cfdemSolverIB` needs `env.sh` sourced (VTK via `LD_LIBRARY_PATH`). The
+  CFDEM build needed no extra flags.
+- **Static libstdc++:** the `gcc/13.2.0` module ships only `libstdc++.a`, so
+  `cfdemSolverIB`, every OpenFOAM library, `liblmp_auto.so` and the CFDEM libraries each
+  contain their own copy of libstdc++ (`ldd` lists no `libstdc++.so`; the `check`
+  stage's `libstdc++` line is therefore empty). This did not cause problems in the
+  tutorial.
+- GCC 13 does not need the patch in `openfoam6-gcc15.patch`; it was applied anyway and is
+  harmless.
+
 ---
 
 ## 1. Summary of the final setup
