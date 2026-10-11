@@ -8,6 +8,7 @@ Related documents:
 - `BUILD_NOTES.md`: compile walkthrough for LIGGGHTS and VTK.
 - `PE_CONVEYOR.md`: the conveyor port in detail.
 - `RUNBOOK.md`: run log, pe quirks (6), case-by-case comparisons (9), what pe is missing (10).
+- `CFDEM_SURVEY.md`: survey of CFDEMcoupling-PUBLIC (LIGGGHTS + OpenFOAM) for pe and FeatFloWer.
 
 ---
 
@@ -48,9 +49,9 @@ Related documents:
 - Soft contacts: Hertz or Hooke springs, dashpots, tangential history springs, with optional
   cohesion (SJKR), plastic hysteresis and rolling friction. Restitution is an input that the
   dashpot reproduces.
-- The time step must be a small fraction of the Rayleigh/Hertz time (1e-5 s in the tutorials,
-  against 5e-4 s in pe). The tutorials afford this with a Young's modulus of 5e6 Pa, orders
-  of magnitude softer than real materials.
+- The time step must be a small fraction of the Rayleigh/Hertz time (1e-5 s in most tutorials,
+  5e-5 s in the mesh cases, against 1e-4 to 5e-4 s in pe). The tutorials afford this with a
+  Young's modulus of 5e6 Pa, orders of magnitude softer than real materials. Details in B.10.
 - Contact models change results visibly: on identical insertion the bed height (z95 %) was
   12.4 mm with cohesion, 4.4 mm without, 3.9 mm with plastic hysteresis (RUNBOOK 9.3).
 - **Beds settle slowly and never become completely still.** Energy rings through the spring
@@ -125,7 +126,9 @@ rare or the system is at rest, both codes give the same answer.
 Explicit soft-contact forces need only ghost data, so LIGGGHTS parallelises automatically. pe's
 contact impulses are coupled unknowns of a global complementarity problem; a body touching two
 subdomains receives impulses from both, which must be iterated to consistency across ranks.
-That is why pe's MPI support is hand-wired per example and why the ports ran serially.
+That is why pe's MPI support is hand-wired per example and why the ports ran serially
+(`conveyor` and `cylinder_pack` have since been made MPI-capable, pe commit `fd4a1a4`). The two
+domain decompositions are compared in detail in B.8.
 
 ### B.6 Stacking: same answer, different pain
 
@@ -143,3 +146,149 @@ Most porting effort went into things LIGGGHTS provides out of the box: insertion
 energy diagnostics. pe's physics was adequate for frictional, non-cohesive cases; what is
 missing to make it a DEM tool comparable to LIGGGHTS is listed in RUNBOOK section 10
 (restitution, cohesion, history-dependent contacts, insertion module, mesh BVH, diagnostics).
+
+### B.8 Domain decomposition compared
+
+Both codes decompose space, give each body to the process that contains its centre and keep
+copies of nearby bodies from neighbouring processes (LIGGGHTS: ghost atoms, pe: shadow copies).
+The bookkeeping is comparable; what has to be communicated per step is not. Read from the code
+on 2026-10-09 (LIGGGHTS `3d5c00f2`, pe `807f656`); paths below are relative to `src/` for
+LIGGGHTS and to the pe root for pe.
+
+| | LIGGGHTS-PUBLIC 3.8 | pe |
+|---|---|---|
+| Subdomains | Automatic regular brick from `processors Px Py Pz`; the factorisation with the smallest surface is chosen (`procmap.cpp:868`); splits are always uniform (`comm.cpp:340`) | Hand-defined: `defineLocalDomain(...)` with an intersection or union of half-spaces, `connect(rank, geometry, offset)` per neighbour. Helpers: `RectilinearGrid` (non-uniform), `pe/interface/decompose.h`, `decomposeSlabs()` in `liggghts_common.h` |
+| Neighbours | 6, from `MPI_Cart_shift`; edge and corner ghosts arrive by forwarding through the x, y, z swaps in order | Explicit graph; every process that can share a body must be connected directly (26 for a 3-D grid) |
+| Ghost criterion | Distance: within cutoff + skin of the subdomain face; the granular variant adds each particle's own radius (`comm_I.h:66`) | Shape: the body's geometry intersects the remote domain inflated by `contactThreshold` (`Process::intersectsWith`); works unchanged for boxes, capsules, unions, meshes |
+| Ghost and migration update | Only on reneighbour steps (an atom moved more than skin/2); other steps forward positions and velocities only (`verlet.cpp:299-330`) | Every step in `synchronize()`: update, copy or removal notification per body and connected neighbour |
+| Migration limit | An atom that moves more than one subdomain between reneighbours is lost (`comm.cpp:888`) | Only to connected neighbours, so effectively the same limit |
+| Contact across a boundary | Computed on both processes with `newton off`, which tangential history requires (`pair_gran.cpp:260`); each applies the force to its own particle only (`pair_gran_base.h:427`). No reverse communication of forces | Resolved once, by the owner of the contact point (`HardContactSemiImplicitTimesteppingSolvers.h` around line 1812); the other body gets the impulse through velocity-correction messages |
+| Messages per step | One forward communication (6 point-to-point pairs) plus mesh updates | One `synchronize()`, then two neighbour exchanges per relaxation iteration in `synchronizeVelocities()` (corrections to the owner, updated velocities back), plus an `MPI_Allreduce` per iteration if non-fixed global bodies exist. About 200 exchanges per step at the default 100 iterations |
+| Contact history | Per atom, keyed by the partner's global tag, migrates with the atom (`fix_contact_history.cpp`); each side of a boundary contact keeps its own copy | None to migrate (no tangential springs in the hard-contact model) |
+| Walls | Mesh triangles distributed: owned by the process containing the centroid, ghost triangles near the faces (`multi_node_mesh_parallel_I.h`); wall contacts computed on the particle owner. `mesh/surface/planar` is not split | Large static geometry is usually global (`pe_GLOBAL_SECTION`) and replicated on every process; global-global contacts on root only, global-remote contacts rejected. A non-global `TriangleMesh` is shadow-copied whole |
+| Clumps | Parallel multisphere code exists (`multisphere_parallel.cpp`), but the PUBLIC tutorial states serial only (`processors 1 1 1`); no rank check in the code | A `Union` is one body; migrates and is copied as a whole |
+| Periodicity | Ghost coordinates shifted by the box length during the swaps | `offset` vector in `connect(...)` |
+| Load balancing | None (no `balance`, `fix balance`, RCB or tiled communication in this version) | None |
+
+What follows from this:
+
+- **pe's machinery is more general, LIGGGHTS' more automatic.** pe can describe any convex
+  subdomain, which is what allows it to follow a FeatFloWer partition, and its shape-based
+  ghost test needs no special handling for non-spherical bodies. LIGGGHTS only does uniform
+  bricks and handles clumps by enlarging the ghost cutoff, but needs no setup code and skips
+  the ghost rebuild on most steps thanks to the skin.
+- **The cost difference is the solver, not the decomposition.** A soft-contact force depends
+  only on the current state, so one halo exchange per step suffices and computing boundary
+  contacts twice is cheaper than sending forces back. pe's impulses are coupled: within a
+  process the relaxation is Gauss-Seidel, across processes the boundary bodies are exchanged
+  once per sweep and damped by `relaxationParam_` (0.9). The convergence check is compiled out
+  (`#if 0` around line 2096), so all 100 sweeps always run.
+- **pe results depend on the decomposition.** The partitioned sweep combines boundary updates
+  differently for each partition, so trajectories change with the process count (commit
+  `fd4a1a4` reports kinetic energies within 10 % on 1, 2 and 4 processes). LIGGGHTS differs
+  only by floating-point summation order.
+- **Walls scale differently.** LIGGGHTS distributes a large wall mesh; pe replicates global
+  geometry on every process, which is fine for planes and a belt box but not for a large mesh.
+- **Cheapest improvements on the pe side:** re-enable the convergence check with a reduction
+  every few sweeps rather than every sweep, and exchange boundary velocities only every k
+  sweeps (only bodies with shadow copies are sent already, so the gain is in fewer message
+  rounds, not smaller messages).
+
+### B.9 Lubrication and liquid films
+
+LIGGGHTS-PUBLIC has no lubrication model for fully immersed particles: the LAMMPS FLD package
+(`pair lubricate`) is not included, only a leftover comment in `src/pair.cpp:1357` mentions it.
+What it has is a lubrication-type viscous force inside two liquid-bridge cohesion models for
+wet granular material in air (the pendular regime), used as `cohesion <model>` in `pair gran`
+(`src/cohesion_model_{easo,washino}_capillary_viscous.h`, `doc/gran_cohesion_*.txt`):
+
+- Each particle carries a surface liquid content; liquid is redistributed between the two
+  particles when a bridge ruptures (scalar transport fix `liquidtransfer`).
+- While a bridge exists the pair feels a capillary force (Soulie 2006, depends on bridge volume,
+  contact angle and gap) and a viscous force (Nase, cited by Shi and McCarthy 2008): normal
+  `6 pi mu R_eff^2 v_n / h`, tangential `6 pi mu R_eff v_t (8/15 ln(R_eff/h) + 0.9588)`. The
+  gap has a floor of `minSeparationDistanceRatio * R_eff`, which is also the value used while
+  the particles overlap. Both forces are explicit.
+- `easo/capillary/viscous` forms the bridge only on contact (without one, `surfacesClose`
+  returns early), so approaching particles feel no squeeze-film damping, only separating ones
+  until rupture at `(1 + theta/2) V_bond^(1/3)` (Lian). Walls are dry only.
+  `washino/capillary/viscous` forms and ruptures the bridge at the same distance, so approaches
+  inside the rupture distance are damped too.
+
+The CFD coupling does not add lubrication either. `fix couple/cfd/force` pushes positions,
+velocities, radii (and optional shape data) and pulls only `dragforce` and `hdtorque`
+(`src/fix_cfd_coupling_force.cpp:362-381`); all fluid forces are computed in CFDEMcoupling from
+the volume-averaged field. The public CFDEMcoupling (github.com/CFDEMproject/CFDEMcoupling-PUBLIC,
+`cfdem-3.8.1` for LIGGGHTS 3.8.0 and OpenFOAM 6, last pushed 2025-07-03, README says no further
+updates are planned) has these force models: Archimedes, ArchimedesIB, DiFeliceDrag,
+GidaspowDrag, KochHillDrag, LaEuScalarTemp, MeiLift, SchillerNaumannDrag, ShirgaonkarIB,
+gradPForce, viscForce, virtualMassForce and some bookkeeping models; none is a pairwise
+lubrication force. Short-range squeeze films between immersed particles, which an unresolved
+CFD mesh cannot see, are therefore not modelled in the public LIGGGHTS/CFDEM chain.
+
+| | LIGGGHTS capillary/viscous | pe `LubricationStage` |
+|---|---|---|
+| Physical setting | Wet granular in air, pendular liquid bridges | Particles fully immersed in fluid, coupled to CFD |
+| Model | Capillary force + leading-order Reynolds normal term + log tangential term | Kroupa et al. 2016: normal squeeze with `1/eps`, `ln eps`, `eps ln eps` terms, sliding force and torque |
+| Active | While a bridge exists (Easo: only after contact) | Every pair below the cutoff, including on approach |
+| Near contact | Gap floor at a minimum separation | Vinogradova slip above `h_c`, force frozen below |
+| CFD awareness | None | Cutoff can be clamped to the CFD cell size (`lubricationMeshClampFactor_`) |
+| Integration | Explicit force (the 1/h damping tightens the time step) | Semi-implicit normal mode, stable at CFD time steps |
+| Capillary force, liquid transport | Yes | No |
+
+The two codes cover different physics: pe is ahead for suspension lubrication, LIGGGHTS has the
+wet-granular cohesion pe lacks (it belongs with the missing cohesion models in RUNBOOK section 10).
+
+### B.10 Time step limits
+
+LIGGGHTS generally needs a much smaller step than pe, because the two limits have different
+origins.
+
+**LIGGGHTS (soft contacts, explicit integration).** The step must resolve the compression and
+recovery of the contact spring. Common rules: a fraction (about 10 to 20 %) of the Rayleigh
+time `pi R sqrt(rho/G) / (0.1631 nu + 0.8766)`, or about 1/50 of the Hertz contact duration.
+Both shrink with stiffness. Computed for the small conveyor sphere (r 15 mm, rho 2500,
+nu 0.45):
+
+| Young's modulus | Rayleigh time | Hertz contact time, sphere-sphere at 2 m/s | Resulting step |
+|---|---|---|---|
+| 5e6 Pa (tutorials) | 1.9e-3 s | 3.3e-3 s | about 7e-5 to 2e-4 s |
+| 7e10 Pa (glass-like) | 1.6e-5 s | 7e-5 s | about 1e-6 to 3e-6 s |
+
+The tutorials soften the material by roughly four orders of magnitude to keep the step
+affordable, and the conveyor's 1e-5 s is still conservative (0.5 % of the Rayleigh time, RUNBOOK
+run 3). The explicit viscous liquid-bridge force of B.9 adds another limit at small gaps.
+
+**pe (hard contacts).** Stiffness does not enter. The limits are geometric:
+
+- Displacement per step must stay well below the particle size and the contact threshold, or
+  contacts are detected late or missed. Conveyor at 5e-4 s: 4.5 m/s x 5e-4 s = 2.25 mm, about
+  15 % of the small radius.
+- Penetration per step is about `v dt`, and the error reduction turns it into a rebound of about
+  `erp` (quirk 6.20). Larger steps mean larger overlaps and larger artefacts; the split-impulse
+  option (pe commit `100a3e4`) removes the velocity kick of the correction itself.
+- Impacts are instantaneous, so a smaller step only improves temporal resolution; there is no
+  stiffness instability.
+
+Steps used in the ports:
+
+| case | LIGGGHTS step | pe step | ratio |
+|---|---|---|---|
+| conveyor | 1e-5 | 5e-4 | 50 |
+| insert_stream | 1e-5 | 2.5e-4 | 25 |
+| newModels, noCohesion (cylinder_pack) | 1e-5 | 1e-4 | 10 |
+| multisphere | 1e-5 (E 1e7) | 1e-4 | 10 |
+| meshGran | 5e-5 | 1e-4 | 2 |
+| movingMeshGran | 5e-5 | 5e-4 | 10 |
+
+With realistic stiffness the LIGGGHTS steps would shrink by a factor of about 100 while the pe
+steps stay as they are.
+
+A larger step does not make pe faster by itself: each step runs 100 relaxation sweeps over the
+contact network (and two neighbour exchanges per sweep under MPI, B.8), so dense beds still cost
+about 5 times more core time (B.4). pe wins for stiff materials in dilute or long-lasting
+contacts (belt transport, slow shear); LIGGGHTS wins for many contacts per particle with an
+affordable softened material. The soft-contact `DEMSolverObsolete` in pe has the same stiffness
+limit as LIGGGHTS (about 1e-5 s for the tutorials). The large hard-contact step is paid for in
+fidelity: restitution, contact duration and wave propagation through a packing are not
+resolved, which is where the two codes disagree (B.1, B.2).
