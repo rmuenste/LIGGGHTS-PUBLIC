@@ -1,0 +1,39 @@
+diff --git a/src/OpenFOAM/containers/Lists/FixedList/FixedList.C b/src/OpenFOAM/containers/Lists/FixedList/FixedList.C
+index 8a9f6079..eb03d535 100644
+--- a/src/OpenFOAM/containers/Lists/FixedList/FixedList.C
++++ b/src/OpenFOAM/containers/Lists/FixedList/FixedList.C
+@@ -87,7 +87,7 @@ bool Foam::FixedList<T, Size>::operator<(const FixedList<T, Size>& a) const
+         }
+     }
+ 
+-    if (Size < a.Size)
++    if (Size < a.size())
+     {
+         return true;
+     }
+diff --git a/src/OpenFOAM/db/IOstreams/hashes/OSHA1stream.H b/src/OpenFOAM/db/IOstreams/hashes/OSHA1stream.H
+index 9d59e23b..d0f19a1f 100644
+--- a/src/OpenFOAM/db/IOstreams/hashes/OSHA1stream.H
++++ b/src/OpenFOAM/db/IOstreams/hashes/OSHA1stream.H
+@@ -80,6 +80,21 @@ public:
+             sha1_.append(str, n);
+             return n;
+         }
++
++        //- Process a single character
++        //  (newer libstdc++ writes single chars via sputc() -> overflow()
++        //  instead of xsputn(); the default overflow() returns EOF and sets
++        //  badbit on the stream)
++        virtual int overflow(int c = EOF)
++        {
++            if (c != EOF)
++            {
++                const char ch = static_cast<char>(c);
++                sha1_.append(&ch, 1);
++                return c;
++            }
++            return 0;
++        }
+ };
+ 
+ 
