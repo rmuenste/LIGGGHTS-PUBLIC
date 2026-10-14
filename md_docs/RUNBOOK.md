@@ -393,6 +393,11 @@ Anything that creates overlaps outside the solver (insertion, enabling collision
 bodies by hand, `setPosition`) must make sure the overlap is zero first. Soft-contact codes
 resolve the same overlap over many steps through the spring force.
 
+Update (pe `100a3e4`, 2026-10-04): `setSplitImpulse(true)` on the collision system removes the
+penetration with pseudo velocities that move the positions but are not kept as body velocity,
+so the kick disappears (pe's test: a 0.05-deep box is launched at 35 m/s without it and stays
+at v_z = 0 with it). Off by default; all runs in this log used the default.
+
 ### 6.14 The hard-contact solver ignores restitution
 `HardContactSemiImplicitTimesteppingSolvers` reads only the friction coefficient of a contact
 (`c->getFriction()`); all collisions are perfectly inelastic. The `cor` argument of
@@ -473,6 +478,24 @@ impacts and rely on the contact threshold to keep overlaps small; a real restitu
 erp 0.5; all ports were rerun with 0.05 (runs 24 to 30). Settled beds and free-fall cases were
 unchanged, impact-dominated cases (multisphere, meshGran tail, stray bounced particles)
 changed as predicted.
+
+The split-impulse option of 6.13 (pe `100a3e4`) removes this artificial restitution at its
+source: with it, pe's restitution-0 drop test rebounds with 0.0009 instead of 0.18. It is the
+better fix than a small erp, since overlaps are still corrected at full rate. The ports have not
+been rerun with it yet.
+
+### 6.21 Dynamic friction is never selected
+
+Verified 2026-10-14 at pe `1f60291`. The `Contact` constructor picks static or dynamic friction
+from the tangential relative velocity, but computes it as
+`tvel = trans(normal_) * (rvel - normal_ * nvel)` (`src/core/contact/Contact.cpp:83, 148`): the
+normal component of a vector from which the normal component was just removed, so always 0.
+Every contact therefore gets `Material::getStaticFriction`, and the semi-implicit solver uses
+that value (`c->getFriction()`,
+`pe/core/collisionsystem/HardContactSemiImplicitTimesteppingSolvers.h:1949`). Fix:
+`tvel = (rvel - normal_ * nvel).length()`. The LIGGGHTS ports are not affected (they pass the
+same value for static and dynamic friction); the FeatFloWer DKT runs with `mu_s / mu_d =
+0.1 / 0.05` are (`CFDEM_SURVEY.md` 13.4).
 
 ---
 

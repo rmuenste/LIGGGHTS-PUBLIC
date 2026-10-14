@@ -618,11 +618,12 @@ Output files: `DEM/post/position_particle_{1,2}.txt`,
 every 100 DEM steps), `DEM/post/dump.liggghts_run`, `postproc_summary.txt`,
 `CFD/octave/pos_z_two_part_rec_glow.png`, `CFD/octave/vel_z_two_part_rec_glow.png`.
 
-### 6.5 Not tested / still missing on this machine
+### 6.5 Not tested / still missing on the workstation
 
 - Octave (tutorial's `postproc.m`), evince, ParaView: not installed; the Python
   script replaces `postproc.m`.
-- VTK development headers: LIGGGHTS VTK dumps disabled (5.12).
+- VTK development headers: LIGGGHTS VTK dumps disabled (5.12). Not an issue on the
+  cluster, where LIGGGHTS is built with the self-built VTK 9.3.1 (`LIGGGHTS_USE_VTK=ON`, 0.2).
 - scotch/ptscotch, metis: not available; only `simple`/`hierarchical`/`manual`
   decomposition works.
 - OpenFOAM solvers, other CFDEM solvers and utilities: not built.

@@ -3,10 +3,12 @@
 Date: 2026-10-09
 Source: CFDEMcoupling-PUBLIC `cfdem-3.8.1`, commit `abedb07` (2025-07-03), cloned to
 `CFDEMcoupling-PUBLIC/` next to `LIGGGHTS-PUBLIC/` and `pe-0.3rc1/`
-Coupled codes: LIGGGHTS 3.8.0 (this repository), OpenFOAM-6 commit `af7d7f4` (cloned shallow to
-`OpenFOAM-6/`, not built)
+Coupled codes: LIGGGHTS 3.8.0 (this repository), OpenFOAM-6 commit `af7d7f4` (`OpenFOAM-6/`)
 
-Read-only survey: nothing was built or run. Marks: **[V]** verified in the code, **[I]** inferred.
+Sections 1 to 10 were written as a read-only survey (2026-10-09). The stack has since been built
+and the `twoSpheresGlowinskiMPI` tutorial run on the workstation and on the cluster
+(`CFDEM_BUILD_NOTES.md`, RUNBOOK runs 31 and 32); sections 11 to 13 use those results.
+Marks: **[V]** verified in the code, **[I]** inferred.
 Path shorthands: `cP/` = `src/lagrangian/cfdemParticle/`, `sM/` = `cP/subModels/` (both in the
 CFDEMcoupling repository), `L/` = `LIGGGHTS-PUBLIC/src/`.
 
@@ -445,6 +447,7 @@ so this is no direct comparison. Still, friction by itself does not lock a rolli
 
 A candidate on the pe side is the tangential-velocity bug in `src/core/contact/Contact.cpp:83, 148`:
 `tvel = trans(n) * (rvel - n * nvel)` is always 0, so the static coefficient is always selected.
-Not verified as the cause. Test: fix it (`tvel = (rvel - n * nvel).length()`) and repeat a
+The bug itself is confirmed, and the semi-implicit solver uses the selected value (RUNBOOK quirk
+6.21); that it causes the locking is not verified. Test: fix it (`tvel = (rvel - n * nvel).length()`) and repeat a
 frictional DKT run; in parallel, check whether the hard-contact friction cone can hold a sticking
 pair at a tilt at all.
