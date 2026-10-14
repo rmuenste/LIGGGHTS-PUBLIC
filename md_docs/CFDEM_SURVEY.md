@@ -36,6 +36,9 @@ For pe and FeatFloWer the main findings are:
   boundary method should be more accurate (section 6).
 - There is no lubrication or other short-range hydrodynamic pair force anywhere (section 7).
 - Three tutorials are natural benchmark twins for pe and FeatFloWer (section 8).
+- Resolved-particle classification (section 13, pe `1f60291`): pe + FeatFloWer handle six shape
+  types, own overlaps deterministically and are tested in CI; CFDEM IB handles spheres only and
+  blends overlapping cells in loop order, but its seed-and-flood search scales with coverage.
 
 ---
 
@@ -279,7 +282,11 @@ Benchmark twins for pe and FeatFloWer:
 - (done, section 12) Diff `cfdemSolverPiso` and `cfdemSolverIB` against OpenFOAM-6 `pisoFoam`.
 - Look at OpenFOAM's own `DPMFoam` / `MPPICFoam` (`src/lagrangian/intermediate`) as a third
   reference.
+- (done, `CFDEM_BUILD_NOTES.md` section 6) Build CFDEM and run twoSpheresGlowinskiMPI.
 - Plan the drafting-kissing-tumbling comparison: twoSpheresGlowinskiMPI against pe + FeatFloWer.
+- (section 13.4) Fix the pe `tvel` bug and repeat a frictional DKT run.
+- Seed-and-flood classification for FeatFloWer, following `IBVoidFraction::buildLabelHashSet`
+  (roadmap item 6), keeping pe's per-DOF query as the reference.
 
 ---
 
@@ -353,3 +360,91 @@ Consequences:
   campaigns run so far (phi up to 0.2) the effect is probably small; for a dense bed (the Ergun
   twin, model A in CFDEM) it is not.
 - pe + FeatFloWer has pairwise lubrication on the E-L path; CFDEM has none.
+
+---
+
+## 13. Resolved-particle classification: pe `1f60291` against CFDEM IB
+
+Added 2026-10-14. pe as pinned in FeatFloWer `feature/dns-validation` (`2bb4e5e6`, `libs/pe` at
+`1f60291`, pe PRs #43 and #44 on top of `11ec5d3`). Both sides have to answer the same question
+for the resolved coupling: which mesh entities lie inside which particle. In FeatFloWer the FBM
+asks pe for every Q2 DOF; in CFDEM `engineSearchIB` and `IBVoidFraction` work per particle.
+
+### 13.1 What pe PRs #43 and #44 added [V]
+
+Paths relative to `FeatFloWer/libs/pe/` unless they name FeatFloWer.
+
+- **Spatial index refresh** (`8ea90af`): `findContacts()` files bodies in the hash grid before
+  the solver integrates their positions, so afterwards the cell assignment is one step old. The
+  27-cell point query could then miss a body whose AABB minimum sits just below a cell boundary:
+  its interior was classified as fluid after a motion of 0.035 % of a diameter. The update
+  phase is now the public `HashGrids::refreshSpatialIndex()` (`pe/core/detection/coarse/HashGrids.h:1327`),
+  called by `findContacts()` itself and exposed as `refresh_spatial_index_()`
+  (`src/interface/sim_setup.cpp:116, 493`). FeatFloWer calls it after the pe step and before the
+  classification (`source/src_fbm/fbm_main.f90:2037`, FeatFloWer `dc82d7fb`).
+- **Overlap ownership by minimum system id** (`8ea90af`): a point inside several bodies used to get
+  the first body found, which depends on traversal order; the accelerated and the exhaustive query
+  disagreed on 21 of 42 sampled points inside two overlapping spheres. Both now take the minimum
+  system id.
+- **All owners** (`ea383df`): `pointOwners` / `pointOwnersAccelerated`
+  (`src/interface/object_queries.cpp:720, 735`) return every body containing a point, ids
+  ascending, with the total count separate from the filled prefix. FeatFloWer keeps the minimum id
+  as the canonical owner and stores DOFs inside two or more bodies in a CSR table
+  (`source/src_fbm/fbm_ownership.f90`, FeatFloWer `190a5b6a`). One shape dispatch,
+  `bodyContainsPoint()` (`object_queries.cpp:546`), serves all four queries.
+- **Same solid flag on both paths** (`b079b59`): the accelerated query wrote `bytes[0] + 1`
+  instead of 1 (wrong from system id 2^56 on; no caller affected).
+- **Tests** (`f8ae0bf`, `b23da85`, `a88c9d1`): `tests/interface/pe_fbm_query_stress.cpp`
+  (25 serial stages: mono- and polydisperse, six rotated shapes before and after motion, meshes
+  with and without DistanceMap, overlaps, random shapes, the adversarial construction per shape
+  with and without refresh) and `pe_fbm_query_stress_mpi.cpp` (2 and 4 ranks: shadow copies, a
+  body crossing the cut between steps, migration, all shapes straddling the cut). Every stage
+  asserts that the grid is active. Runs in CI.
+- **Layer-2 gate** (`3280e69`, `8f823c4`; FeatFloWer `66dde3db`): `src/interface/fbm_gate_probe.cpp`
+  builds bodies that fill a whole cell span, so that a stale index would be detected, and
+  FeatFloWer's `applications/q2p1_hashgrid_test` compares the accelerated against the exhaustive
+  query on every Q2 DOF of a real partitioned mesh.
+
+### 13.2 Comparison [V unless marked]
+
+CFDEM paths relative to `cP/`.
+
+| | pe + FeatFloWer | CFDEM IB |
+|---|---|---|
+| shapes | sphere, capsule, box, ellipsoid, cylinder, triangle mesh (with or without DistanceMap) | spheres only: `pointInParticle` returns `|x - c|^2 / r^2 - 1` (`sM/voidFractionModel/voidFractionModel/voidFractionModel.C:199-211`) |
+| search | per DOF: hash-grid candidates, then `bodyContainsPoint`; index refreshed after motion | per particle: one seed cell, the centre cell via `meshSearch`, or else the first of `(zSplit-1)*xySplit + 2` = 114 surface points found on this rank (`sM/locateModel/engineSearchIB/engineSearchIB.C:68-72, 170-204`); then a recursive flood fill over `cellCells` that continues while a cell is at least partly covered (`sM/voidFractionModel/IBVoidFraction/IBVoidFraction.C:292-358`) |
+| cost | O(N_DOF) per classification | O(covered cells) per particle. This is item 6 of FeatFloWer's `fbm_acceleration_roadmap.md` (seed and flood), already done in CFDEM |
+| state between steps | hash grid, now refreshed | none: locate and flood fill are rebuilt each coupling step, so there is no stale-index class of error |
+| particle on several ranks | each rank queries its own DOFs; shadow copies and migration tested at 2 and 4 ranks | one seed per rank; `cellCells` does not cross processor boundaries, so a piece of the particle on a rank that is not connected to the seed cell is missed **[I]** (possible for a non-convex rank domain) |
+| overlapping particles | canonical owner = minimum system id, plus the multi-owner table | alpha reduced by each particle and clipped at 0 (`IBVoidFraction.C:355`); `setParticleVelocity` blends `U = (1 - alpha) u_p + alpha U` per particle in loop order (`derived/cfdemCloudIB/cfdemCloudIB.C:313-342`), so a cell inside two particles is blended twice and the last particle dominates: the order dependence pe removed in `8ea90af` |
+| partial cells | per DOF (FeatFloWer: alpha from the DOF flags) | fraction from 8 centre-to-vertex segments, each weighted 0.125 (`IBVoidFraction.C:154, 330`), which assumes hexahedra |
+| verification | stress tests in CI, Layer-2 gate on a real mesh | no tests of locate or void fraction; tutorials only (`etc/testTutorials.sh`) |
+
+### 13.3 Overall standing (update of 12.3)
+
+- **pe + FeatFloWer ahead:** non-spherical and mesh bodies in the resolved coupling; a
+  classification that is tested serially and in parallel; deterministic overlap ownership;
+  pairwise lubrication; backward-Euler drag on the particle side; the rigid-body velocity as a
+  constraint inside the FEM solve instead of a projection step after it (section 6).
+- **CFDEM ahead:** the volume-averaged fluid operator for unresolved dense beds (12.1); mesh
+  refinement around the particles (`dynamicRefineFvMesh`); classification cost that scales with
+  coverage. The refinement is what makes the Glowinski tutorial cheap: 4 ranks, 76 s for the full
+  drafting-kissing-tumbling sequence to t = 0.35 s (`CFDEM_BUILD_NOTES.md` 6.4).
+- **Same:** the exchange pattern (global arrays summed with `MPI_Allreduce`, section 4).
+
+### 13.4 Lead from the DKT runs: contact friction [I]
+
+FeatFloWer's DKT campaign (`docs/md_docs/dns_validation_datasheet.md`, rows `dkt_offset`,
+`dkt16_offset`, `dkt_nofric_long`) found the kissing pair locked at a tilt of about 4 deg in exact
+contact with pe's HCAF material `mu_s / mu_d = 0.1 / 0.05`, at D/h = 8 and 16 alike. Only the
+frictionless run completed the tumble. The CFDEM tutorial uses Hertz with tangential history and
+**friction coefficient 0.5** (`tutorials/cfdemSolverIB/twoSpheresGlowinskiMPI/DEM/in.liggghts_run:26`)
+and tumbles: the pair rolls apart, with contact lost at t = 0.273 s. The setups differ
+(dimensionless D/h = 8 on 109 ranks against the dimensional Glowinski case with soft contact),
+so this is no direct comparison. Still, friction by itself does not lock a rolling pair.
+
+A candidate on the pe side is the tangential-velocity bug in `src/core/contact/Contact.cpp:83, 148`:
+`tvel = trans(n) * (rvel - n * nvel)` is always 0, so the static coefficient is always selected.
+Not verified as the cause. Test: fix it (`tvel = (rvel - n * nvel).length()`) and repeat a
+frictional DKT run; in parallel, check whether the hard-contact friction cone can hold a sticking
+pair at a tilt at all.
