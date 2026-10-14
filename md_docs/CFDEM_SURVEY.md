@@ -41,6 +41,11 @@ For pe and FeatFloWer the main findings are:
 - Resolved-particle classification (section 13, pe `1f60291`): pe + FeatFloWer handle six shape
   types, own overlaps deterministically and are tested in CI; CFDEM IB handles spheres only and
   blends overlapping cells in loop order, but its seed-and-flood search scales with coverage.
+- Hindered settling (section 14): with a Di Felice drag, the Richardson-Zaki exponent comes out
+  right only if the particle feels the suspension's pressure gradient and the carrier velocity
+  contains the return flow. Each missing ingredient costs one unit of n. FeatFloWer's
+  `div u = 0` lacks the second and possibly the first, which caps n near 2.7 even with exact
+  drag inputs.
 
 ---
 
@@ -289,6 +294,9 @@ Benchmark twins for pe and FeatFloWer:
 - (section 13.4) Fix the pe `tvel` bug and repeat a frictional DKT run.
 - Seed-and-flood classification for FeatFloWer, following `IBVoidFraction::buildLabelHashSet`
   (roadmap item 6), keeping pe's per-DOF query as the reference.
+- (section 14.4) Check the buoyancy / pressure-gradient force on FeatFloWer's E-L particles and
+  the return flow in the settling column before attributing the hindered-settling deficit to
+  the drag inputs alone.
 
 ---
 
@@ -451,3 +459,92 @@ The bug itself is confirmed, and the semi-implicit solver uses the selected valu
 6.21); that it causes the locking is not verified. Test: fix it (`tvel = (rvel - n * nvel).length()`) and repeat a
 frictional DKT run; in parallel, check whether the hard-contact friction cone can hold a sticking
 pair at a tilt at all.
+
+---
+
+## 14. Hindered settling: what the Di Felice exponent needs from the fluid equations
+
+Added 2026-10-14, in reply to the FeatFloWer E-L campaign (branch `feature/el-rz-postfix`). In
+the D3.2 walled settling column the E-L model gives a hindered-settling exponent n = 1.72 against
+4.57 for the resolved DNS spheres. That campaign traced the deficit to the drag inputs (voidage
+diluted by the kernel, carrier velocity disturbed by the particle itself) and plans to correct
+both. This section argues that two further ingredients, both on the fluid-equation side, are
+needed for n to reach the Richardson-Zaki value.
+
+### 14.1 Di Felice in CFDEM [V]
+
+`sM/forceModel/DiFeliceDrag/DiFeliceDrag.C:200-270` and `forceSubModel.C:791-830`:
+
+- `Re = d eps |Ur| / nu`, `Cd = (0.63 + 4.8/sqrt(Re))^2`,
+  `F = 0.125 Cd rho pi d^2 eps^(2 - chi) |Ur| Ur`, with `Ur = U_fluid - U_particle` and `U` the
+  interstitial velocity. In model B the coefficient is divided by `eps`.
+- `chi = 3.7 - 0.65 exp(-(1.5 - log10 Re)^2 / 2)` **only if the switch
+  `voidageFunctionDiFelice` is set**. Without it `calcXi` returns `chi = 2`, i.e. no voidage
+  function at all (`forceSubModel.C:793-795`). No tutorial sets the switch; `settlingTestMPI`
+  (one particle) runs with `chi = 2`, which is harmless there but a trap for dense cases.
+- Drag inputs: with `interpolation` off (the default) the cell values `voidfraction_[cellI]` and
+  `U_[cellI]` are used, i.e. cell-averaged and disturbed by the particle itself; with it on, the
+  interpolated voidage is clipped to [0.3, 1]. The `calculateCorrectedVoidage` hook is commented
+  out for Di Felice (line 220) and active for Koch-Hill and Gidaspow. There is no
+  undisturbed-velocity correction anywhere in CFDEM, so FeatFloWer's planned corrections go
+  beyond CFDEM rather than catching up with it.
+- The fluid momentum has no gravity term (`cfdemSolverPiso.C:125-148`); `p` is the dynamic
+  kinematic pressure. Particles get `Archimedes` (`-g rho_f V_p`) and, in model A, `gradPForce`
+  (`-V_p grad p`); model B forbids `gradPForce` and carries the pressure share in the `1/eps` of
+  the drag (`cfdTools/sanityChecks/level0_Solver.H`).
+
+### 14.2 Steady homogeneous settling in the Stokes limit [I, derivation]
+
+For `Re -> 0`, `Cd -> 4.8^2/Re` and the Di Felice force becomes
+`F = 2.88 pi mu d eps^(1 - chi) Ur` with `chi -> 3.7`. Let
+`u_t = V_p dRho g / (2.88 pi mu d)` be the single-particle terminal velocity of this closure,
+`phi = 1 - eps` the solid fraction and `dRho = rho_p - rho_f`.
+
+Two ingredients enter:
+
+(a) **Pressure share.** The dynamic pressure gradient in the suspension carries the excess weight
+of the particles, `|grad p_dyn| = phi dRho g` (from the fluid momentum balance with the drag
+feedback). A particle that feels `-V_p grad p_dyn` (model A) or the equivalent `1/eps` on the
+drag (model B) needs a drag of only `V_p dRho g eps`. A particle with buoyancy `rho_f g V_p` alone
+needs `V_p dRho g`.
+
+(b) **Return flow.** In a column closed at the bottom the volume flux vanishes,
+`eps u_f + phi u_p = 0`, so the fluid moves up and `|Ur| = |u_p| / eps`. A fluid that solves
+`div u = 0` without `eps` has zero cross-section mean velocity, so the sampled (undisturbed)
+carrier velocity is about 0 and `|Ur| = |u_p|`.
+
+Resulting settling velocity `|u_p| = u_t eps^n`:
+
+| pressure share (a) | return flow (b) | n (Stokes, chi = 3.7) |
+|---|---|---|
+| yes | yes | chi + 1 = 4.7 (Richardson-Zaki 4.65; DNS 4.57) |
+| no | yes | chi = 3.7 |
+| yes | no | chi = 3.7 |
+| no | no | chi - 1 = 2.7 |
+
+Each missing ingredient costs exactly one unit of n. Errors in the drag inputs act on top: a
+voidage diluted towards 1 weakens `eps^(1 - chi)`, and a carrier velocity dragged along by the
+particle shrinks `|Ur|`, both lowering n further.
+
+### 14.3 What this means for FeatFloWer [I]
+
+- FeatFloWer's fluid solves `div u = 0` with a feedback force and no `eps` (section 12.3), so (b)
+  is missing unless the column is periodic with an explicitly imposed zero-mixture-flux frame.
+- Whether (a) is present depends on the particle force: pe's `HardContactEulerLagrange` leaves
+  gravity and buoyancy to the driver (`euler-lagrange-solver-conventions.md`, section 2). If the
+  driver applies `rho_f g V_p` and no `-V_p grad p`, (a) is missing too.
+- Then correcting the voidage sampling and the self-disturbed velocity can raise n at most to
+  about 2.7 (one ingredient missing: 3.7), not to the DNS value.
+- CFDEM's defaults are not a gold standard for (b) either: with `ddtVoidfraction` off its
+  pressure equation enforces `div(alpha U) = 0`, which drops the volume source that drives the
+  return flow at a moving suspension front.
+
+### 14.4 Checks before implementing the drag-input corrections
+
+1. Which force carries buoyancy on the E-L particles: `rho_f g V_p` only, `-V_p grad p` with the
+   full or the dynamic pressure, or a mixture density?
+2. Is the D3.2 column closed at the bottom or periodic? If periodic, which flux frame is imposed?
+3. Measure the cross-section mean fluid velocity in the E-L run. The return-flow value is
+   `phi |u_p| / eps`; a mean of about 0 confirms that (b) is missing.
+4. Predict n from the table above for the ingredients actually present, and compare with 1.72
+   to see how much is left for the drag-input corrections.
