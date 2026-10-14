@@ -44,8 +44,8 @@ For pe and FeatFloWer the main findings are:
 - Hindered settling (section 14): with a Di Felice drag, the Richardson-Zaki exponent comes out
   right only if the particle feels the suspension's pressure gradient and the carrier velocity
   contains the return flow. Each missing ingredient costs one unit of n. FeatFloWer's
-  `div u = 0` lacks the second and possibly the first, which caps n near 2.7 even with exact
-  drag inputs.
+  `div u = 0` lacks the second and (confirmed) the first, which caps n near 2.7 in the Stokes
+  limit even with exact drag inputs. At Re = 80 even the consistent model gives only n = 2.7.
 
 ---
 
@@ -526,6 +526,30 @@ Each missing ingredient costs exactly one unit of n. Errors in the drag inputs a
 voidage diluted towards 1 weakens `eps^(1 - chi)`, and a carrier velocity dragged along by the
 particle shrinks `|Ur|`, both lowering n further.
 
+**Finite Reynolds number.** The table holds only for `Re -> 0`. With a local power law
+`Cd ~ Re^(-a)`, where `a = s / (0.63 + s)` and `s = 4.8 / sqrt(Re)`, the force is
+`F ~ eps^(2 - chi - a) |Ur|^(2 - a)`. Writing `k = 1` if (a) is present (else 0) and `m = 1` if
+(b) is present (else 0):
+
+`n = m + (k - 2 + chi + a) / (2 - a)`
+
+| Re | chi | a | both | (a) only | (b) only | neither | Richardson-Zaki (Garside and Al-Dibouni) |
+|---|---|---|---|---|---|---|---|
+| 0.01 | 3.70 | 0.99 | 4.64 | 3.64 | 3.65 | 2.65 | 5.10 |
+| 1 | 3.49 | 0.88 | 4.02 | 3.02 | 3.13 | 2.13 | 4.88 |
+| 10 | 3.13 | 0.71 | 3.19 | 2.19 | 2.42 | 1.42 | 4.04 |
+| 80 | 3.10 | 0.46 | 2.66 | 1.66 | 2.01 | 1.01 | 3.09 |
+| 300 | 3.30 | 0.31 | 2.54 | 1.54 | 1.95 | 0.95 | 2.83 |
+| 1000 | 3.49 | 0.19 | 2.49 | 1.49 | 1.93 | 0.93 | 2.75 |
+
+Both ingredients still matter at every Re, but a fully consistent Di Felice model gives only
+n = 2.7 at Re = 80, below the unbounded-suspension correlation (3.1) and well below a DNS value
+of 4.57. If Re of about 80 is the relevant particle Reynolds number, the remaining gap is not a
+coupling error: Di Felice has no wall or confinement term (Richardson-Zaki's own fit has one,
+`n = (4.45 + 18 d/D) Re^(-0.1)` for 1 < Re < 200), and the suspension Re falls with `eps`, so
+the local exponent changes along the curve. The Re used for the comparison should be stated with
+every exponent.
+
 ### 14.3 What this means for FeatFloWer [I]
 
 - FeatFloWer's fluid solves `div u = 0` with a feedback force and no `eps` (section 12.3), so (b)
@@ -534,7 +558,16 @@ particle shrinks `|Ur|`, both lowering n further.
   gravity and buoyancy to the driver (`euler-lagrange-solver-conventions.md`, section 2). If the
   driver applies `rho_f g V_p` and no `-V_p grad p`, (a) is missing too.
 - Then correcting the voidage sampling and the self-disturbed velocity can raise n at most to
-  about 2.7 (one ingredient missing: 3.7), not to the DNS value.
+  about 2.7 (one ingredient missing: 3.7), not to the DNS value. These are Stokes-limit values;
+  at Re = 80 the caps are 1.0 and 1.7 to 2.0, and 2.7 with both ingredients (finite-Re table).
+- Confirmed by the FeatFloWer campaign on 2026-10-14: its Di Felice closure uses the full
+  voidage function (`source/src_el/el_forces.f90`, `EL_DRAG_CLOSURE`, chi = 3.1 at the column's
+  Re of about 80), the particles get `rho_f` buoyancy only, and the sampled fluid velocity at
+  the particles is about 0 against a volume-averaged return flow of 0.008 / 0.023 (N = 40 / 120).
+  Both ingredients were therefore missing. Being tested: a model-A pressure force
+  (`ELFluidGravity=No`, `ELPressureForce=Yes`) and a volume-averaged continuity source
+  `div u = -(d eps/dt + u.grad eps)/eps` in the pressure Poisson right-hand side (FeatFloWer
+  branch `feature/el-volume-averaged`).
 - CFDEM's defaults are not a gold standard for (b) either: with `ddtVoidfraction` off its
   pressure equation enforces `div(alpha U) = 0`, which drops the volume source that drives the
   return flow at a moving suspension front.
