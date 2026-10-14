@@ -294,7 +294,7 @@ Benchmark twins for pe and FeatFloWer:
 - (section 13.4) Fix the pe `tvel` bug and repeat a frictional DKT run.
 - Seed-and-flood classification for FeatFloWer, following `IBVoidFraction::buildLabelHashSet`
   (roadmap item 6), keeping pe's per-DOF query as the reference.
-- (section 14.4) Check the buoyancy / pressure-gradient force on FeatFloWer's E-L particles and
+- (section 14.5) Check the buoyancy / pressure-gradient force on FeatFloWer's E-L particles and
   the return flow in the settling column before attributing the hindered-settling deficit to
   the drag inputs alone.
 
@@ -572,7 +572,35 @@ every exponent.
   pressure equation enforces `div(alpha U) = 0`, which drops the volume source that drives the
   return flow at a moving suspension front.
 
-### 14.4 Checks before implementing the drag-input corrections
+### 14.4 Two Di Felice conventions: FeatFloWer's form lacks `eps^2`
+
+Reported by the FeatFloWer campaign on 2026-10-14. FeatFloWer's `EL_DRAG_CLOSURE` case
+`'difelice'` (`source/src_el/el_forces.f90`) computes
+
+`F = 1/2 rho Cd(Re) A |Ur|^2 eps^(-chi)`, with `Re = rho eps d |Ur| / mu` and interstitial `Ur`,
+
+while CFDEM (`DiFeliceDrag.C`: `0.125 Cd rho pi d^2 eps^(2 - chi) |Ur| Ur`) and the usual CFD-DEM
+form (Kafui et al. 2002, Zhu et al. 2007) carry an extra `eps^2`. FeatFloWer's drag is the
+standard one times `eps^-2`: +16 % at eps 0.927, +56 % at 0.8. **Any FeatFloWer-versus-CFDEM
+comparison at eps < 1 has to account for this factor.**
+
+Where the `eps^2` comes from [V for the definition, I for the rest]: Di Felice (1994, Int. J.
+Multiphase Flow 20, 153) defines the force as the drag on an unhindered particle **subject to the
+same volumetric flux of fluid** (i.e. at the superficial slip `U = eps Ur`) times `eps^(-chi)`.
+Written with interstitial slip, `|U|^2 = eps^2 |Ur|^2` gives the `eps^2`; the Reynolds number
+`d eps |Ur| / nu` is the same superficial one. So the factor belongs to the correlation, not to
+the model A/B bookkeeping (model B adds its own `1/eps` on top, `DiFeliceDrag.C`). FeatFloWer's
+form uses the superficial Re but the interstitial slip in the force, which mixes the two.
+
+Consistency check: with the standard form, model A pressure share and return flow, the
+steady-settling exponent is `n = chi + 1` in the Stokes limit and `(chi + 1)/2` at high Re, so
+chi = 3.65 to 3.7 reproduces Richardson-Zaki at both ends (4.65 and about 2.4). This is the
+calibration Di Felice's chi(Re) embodies. FeatFloWer's form gives
+`n = m + (k + chi + a)/(2 - a)`, i.e. 6.7 in the Stokes limit and 3.96 at Re 80 with both
+ingredients (2.31 with neither), which overshoots Richardson-Zaki. FeatFloWer is adding the
+standard form as an opt-in drag model.
+
+### 14.5 Checks before implementing the drag-input corrections
 
 1. Which force carries buoyancy on the E-L particles: `rho_f g V_p` only, `-V_p grad p` with the
    full or the dynamic pressure, or a mixture density?
